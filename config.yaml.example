@@ -1,0 +1,70 @@
+# Webhook Gateway configuration
+#
+# Secrets are read from environment variables (secret_env), never inline.
+# Durations use Go syntax: "10s", "1m", "24h".
+
+server:
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+  max_body_size: 1048576        # 1MB — cap inbound payload size
+  concurrency_limit: 100        # max in-flight destination deliveries (0 = unlimited)
+
+routes:
+  - path: /hooks/github
+    signature:
+      type: hmac-sha256
+      header: X-Hub-Signature-256
+      secret_env: GITHUB_WEBHOOK_SECRET
+      prefix: "sha256="         # stripped before hex-decoding the signature
+      encoding: hex             # hex (default) — how the signature is encoded
+    destinations:
+      - url: https://service-a.example.com/webhook
+        timeout: 10s
+      - url: https://service-b.example.com/webhook
+        timeout: 5s
+    # Headers to forward beyond Content-Type and X-Webhook-Gateway-Request-Id.
+    # Hop-by-hop headers and Host are never forwarded.
+    forward_headers:
+      - X-GitHub-Event
+      - X-GitHub-Delivery
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      initial_interval: 1s
+      max_interval: 30s
+
+  - path: /hooks/stripe
+    signature:
+      type: stripe              # uses StripeVerifier, NOT generic HMAC
+      header: Stripe-Signature
+      secret_env: STRIPE_WEBHOOK_SECRET
+      tolerance: 300s           # reject events older than 5 minutes
+    idempotency:
+      enabled: true
+      ttl: 24h                  # how long to remember event IDs
+      # Dot-separated object path to the unique event ID in the JSON body.
+      # Example: "id" extracts $.id, "data.object.id" extracts $.data.object.id.
+      # Arrays are not supported. If the path is missing or the body is not
+      # valid JSON, deduplication is skipped and delivery proceeds normally.
+      key_path: id
+    destinations:
+      - url: https://billing.example.com/webhook
+        timeout: 10s
+    forward_headers:
+      - Stripe-Signature
+    retry:
+      max_attempts: 5
+      backoff: exponential
+      initial_interval: 2s
+      max_interval: 60s
+
+dead_letter:
+  type: file
+  path: ./dead_letters
+  store_body: true              # set false to avoid persisting sensitive payloads
+  max_body_bytes: 1048576       # truncate stored body to this size (0 = no limit)
+
+logging:
+  level: info
+  format: json
