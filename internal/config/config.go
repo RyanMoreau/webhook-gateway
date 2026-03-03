@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"time"
 
@@ -21,6 +23,7 @@ type ServerConfig struct {
 	WriteTimeout     time.Duration `yaml:"write_timeout"`
 	MaxBodySize      int64         `yaml:"max_body_size"`
 	ConcurrencyLimit int           `yaml:"concurrency_limit"`
+	AllowInsecure    bool          `yaml:"allow_insecure"`
 }
 
 type RouteConfig struct {
@@ -164,6 +167,18 @@ func validate(cfg *Config) error {
 			if d.URL == "" {
 				return fmt.Errorf("route %q: destination %d: url is required", r.Path, j)
 			}
+			if !cfg.Server.AllowInsecure {
+				u, err := url.Parse(d.URL)
+				if err != nil {
+					return fmt.Errorf("route %q: destination %d: invalid url: %w", r.Path, j, err)
+				}
+				if u.Scheme != "https" {
+					return fmt.Errorf("route %q: destination %d: scheme must be https (got %q)", r.Path, j, u.Scheme)
+				}
+				if isBlockedHost(u.Hostname()) {
+					return fmt.Errorf("route %q: destination %d: private/loopback address not allowed", r.Path, j)
+				}
+			}
 		}
 	}
 
@@ -172,6 +187,19 @@ func validate(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// isBlockedHost returns true if the host is localhost or a literal
+// private/loopback/link-local IP address.
+func isBlockedHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // resolveSecrets reads secret_env values from the environment. The resolved

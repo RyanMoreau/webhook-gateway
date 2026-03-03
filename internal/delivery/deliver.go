@@ -64,7 +64,7 @@ func Deliver(ctx context.Context, dest Destination, headers http.Header, body []
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return &retryableError{err: fmt.Errorf("sending request: %w", err)}
 	}

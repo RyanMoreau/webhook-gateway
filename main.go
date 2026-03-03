@@ -9,6 +9,7 @@ import (
 
 	"github.com/ryanmoreau/webhook-gateway/internal/config"
 	"github.com/ryanmoreau/webhook-gateway/internal/deadletter"
+	"github.com/ryanmoreau/webhook-gateway/internal/delivery"
 	"github.com/ryanmoreau/webhook-gateway/internal/idempotency"
 	"github.com/ryanmoreau/webhook-gateway/internal/logging"
 	"github.com/ryanmoreau/webhook-gateway/internal/router"
@@ -26,6 +27,8 @@ func main() {
 	}
 
 	logging.Setup(cfg.Logging.Level, cfg.Logging.Format)
+
+	delivery.SetClient(delivery.NewClient(cfg.Server.AllowInsecure))
 
 	// Initialize idempotency store.
 	idemStore := idempotency.NewMemoryStore(1 * time.Minute)

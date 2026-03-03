@@ -13,6 +13,8 @@ A single-binary webhook gateway that receives incoming webhooks, verifies signat
 - **Header allowlisting** — control exactly which headers are forwarded to destinations
 - **Body size limiting** — caps inbound payloads to prevent memory exhaustion
 - **Concurrency limiting** — cap total in-flight destination deliveries
+- **HTTPS enforcement** — destinations must use HTTPS; plain HTTP is rejected at config load
+- **SSRF protection** — config-time rejection of private/loopback/link-local IPs and `localhost`, plus a runtime DNS-aware dialer that checks all resolved IPs before connecting
 - **Graceful shutdown** — drains in-flight deliveries on SIGINT/SIGTERM
 
 ## Quick Start
@@ -110,6 +112,21 @@ The gateway always forwards `Content-Type` and `X-Webhook-Gateway-Request-Id`. A
 4. The gateway returns `200` to the provider immediately
 5. Deliveries fan out to all destinations concurrently in the background
 6. Failed deliveries (after retries) go to the dead letter queue
+
+## Security
+
+The gateway enforces defense-in-depth against SSRF and payload exposure:
+
+**Config-time validation** rejects destinations at startup if the URL scheme is not `https`, or if the hostname is `localhost` or a literal private/loopback/link-local IP (e.g. `127.0.0.1`, `10.x`, `169.254.169.254`).
+
+**Runtime DNS-aware blocking** uses a custom `DialContext` that resolves the destination hostname, checks *all* returned IPs against a blocklist (loopback, RFC 1918, link-local, unspecified), and refuses to connect if any IP is private. This catches DNS rebinding and hostnames that resolve to internal addresses.
+
+Both layers can be bypassed with `allow_insecure: true` in the server config for local development:
+
+```yaml
+server:
+  allow_insecure: true    # disables HTTPS and SSRF checks — never use in production
+```
 
 ## Running Tests
 

@@ -9,6 +9,7 @@ server:
   write_timeout: 30s
   max_body_size: 1048576        # 1MB — reject payloads larger than this
   concurrency_limit: 100        # max in-flight destination deliveries (0 = unlimited)
+  allow_insecure: false         # skip HTTPS and SSRF checks (local development only)
 
 routes:
 

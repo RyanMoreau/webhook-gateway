@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -264,5 +265,105 @@ routes:
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestLoad_HTTPDestinationRejected(t *testing.T) {
+	t.Setenv("TEST_SECRET", "s")
+	yaml := `
+routes:
+  - path: /hooks/test
+    signature:
+      type: hmac-sha256
+      header: X-Sig
+      secret_env: TEST_SECRET
+    destinations:
+      - url: http://dest.example.com/hook
+`
+	path := writeConfig(t, yaml)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for http destination")
+	}
+	if !strings.Contains(err.Error(), "scheme must be https") {
+		t.Errorf("error = %q, want mention of 'scheme must be https'", err)
+	}
+}
+
+func TestLoad_AllowInsecure(t *testing.T) {
+	t.Setenv("TEST_SECRET", "s")
+	yaml := `
+server:
+  allow_insecure: true
+routes:
+  - path: /hooks/test
+    signature:
+      type: hmac-sha256
+      header: X-Sig
+      secret_env: TEST_SECRET
+    destinations:
+      - url: http://dest.example.com/hook
+`
+	path := writeConfig(t, yaml)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_PrivateIPDestinationRejected(t *testing.T) {
+	t.Setenv("TEST_SECRET", "s")
+
+	hosts := []string{
+		"127.0.0.1",
+		"10.0.0.1",
+		"172.16.0.1",
+		"192.168.1.1",
+		"169.254.169.254",
+		"localhost",
+	}
+
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			yaml := `
+routes:
+  - path: /hooks/test
+    signature:
+      type: hmac-sha256
+      header: X-Sig
+      secret_env: TEST_SECRET
+    destinations:
+      - url: https://` + host + `/hook
+`
+			path := writeConfig(t, yaml)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error for private host %s", host)
+			}
+			if !strings.Contains(err.Error(), "private/loopback") {
+				t.Errorf("error = %q, want mention of 'private/loopback'", err)
+			}
+		})
+	}
+}
+
+func TestLoad_PrivateIPAllowedWhenInsecure(t *testing.T) {
+	t.Setenv("TEST_SECRET", "s")
+	yaml := `
+server:
+  allow_insecure: true
+routes:
+  - path: /hooks/test
+    signature:
+      type: hmac-sha256
+      header: X-Sig
+      secret_env: TEST_SECRET
+    destinations:
+      - url: https://127.0.0.1/hook
+`
+	path := writeConfig(t, yaml)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
