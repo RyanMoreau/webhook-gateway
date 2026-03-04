@@ -69,7 +69,8 @@ func Deliver(ctx context.Context, dest Destination, headers http.Header, body []
 		return &retryableError{err: fmt.Errorf("sending request: %w", err)}
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	// Drain up to 64KB so the connection can be reused, but no more.
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil

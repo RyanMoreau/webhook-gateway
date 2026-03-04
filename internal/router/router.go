@@ -133,11 +133,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Check idempotency.
+	// Check idempotency (atomic check-and-set to avoid TOCTOU races).
 	if matched.cfg.Idempotency.Enabled && r.idem != nil {
 		eventID := extractKeyPath(body, matched.cfg.Idempotency.KeyPath)
 		if eventID != "" {
-			seen, err := r.idem.Seen(eventID)
+			seen, err := r.idem.SeenOrMark(eventID, matched.cfg.Idempotency.TTL)
 			if err != nil {
 				logger.Warn("idempotency check failed", "error", err)
 				// Continue delivery on error — don't block on dedup failures.
@@ -145,10 +145,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				logger.Info("duplicate event, skipping delivery", "event_id", eventID)
 				w.WriteHeader(http.StatusOK)
 				return
-			} else {
-				if err := r.idem.Mark(eventID, matched.cfg.Idempotency.TTL); err != nil {
-					logger.Warn("idempotency mark failed", "error", err)
-				}
 			}
 		} else {
 			logger.Warn("could not extract event ID from body, skipping deduplication",
@@ -185,13 +181,16 @@ func (r *Router) fanOut(ctx context.Context, logger *slog.Logger, route *routeEn
 			Timeout: d.Timeout,
 		}
 
+		// Acquire semaphore before spawning to avoid unbounded goroutine
+		// accumulation when all destinations are slow.
+		if r.sem != nil {
+			r.sem <- struct{}{}
+		}
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
-			// Acquire semaphore if concurrency-limited.
 			if r.sem != nil {
-				r.sem <- struct{}{}
 				defer func() { <-r.sem }()
 			}
 

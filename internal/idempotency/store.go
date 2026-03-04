@@ -7,11 +7,9 @@ import (
 
 // Store tracks event IDs for deduplication.
 type Store interface {
-	// Seen returns true if the key has been marked within its TTL window.
-	Seen(key string) (bool, error)
-
-	// Mark records the key. Subsequent Seen calls return true until the TTL expires.
-	Mark(key string, ttl time.Duration) error
+	// SeenOrMark atomically checks whether the key exists and, if not, marks it
+	// with the given TTL. Returns true if the key was already present (duplicate).
+	SeenOrMark(key string, ttl time.Duration) (bool, error)
 }
 
 // MemoryStore is an in-memory Store backed by sync.Map with TTL-based expiry.
@@ -30,6 +28,25 @@ func NewMemoryStore(sweepInterval time.Duration) *MemoryStore {
 	return s
 }
 
+// SeenOrMark atomically checks and marks the key. Uses sync.Map.LoadOrStore
+// to eliminate the TOCTOU race between separate Seen()+Mark() calls.
+func (s *MemoryStore) SeenOrMark(key string, ttl time.Duration) (bool, error) {
+	exp := time.Now().Add(ttl)
+	actual, loaded := s.entries.LoadOrStore(key, exp)
+	if !loaded {
+		// First time seeing this key.
+		return false, nil
+	}
+	// Key existed — check if it has expired.
+	if time.Now().After(actual.(time.Time)) {
+		// Expired; overwrite with fresh TTL and treat as new.
+		s.entries.Store(key, exp)
+		return false, nil
+	}
+	return true, nil
+}
+
+// Seen returns true if the key has been marked within its TTL window.
 func (s *MemoryStore) Seen(key string) (bool, error) {
 	v, ok := s.entries.Load(key)
 	if !ok {
@@ -43,6 +60,7 @@ func (s *MemoryStore) Seen(key string) (bool, error) {
 	return true, nil
 }
 
+// Mark records the key with the given TTL.
 func (s *MemoryStore) Mark(key string, ttl time.Duration) error {
 	s.entries.Store(key, time.Now().Add(ttl))
 	return nil

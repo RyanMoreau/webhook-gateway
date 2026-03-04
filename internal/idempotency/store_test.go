@@ -84,3 +84,58 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestMemoryStore_SeenOrMark_AtomicDedup(t *testing.T) {
+	s := NewMemoryStore(1 * time.Minute)
+	defer s.Close()
+
+	const goroutines = 100
+	var wg sync.WaitGroup
+	var firstCount int64
+	var mu sync.Mutex
+
+	// All goroutines race on the same key. Exactly one should win.
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			seen, err := s.SeenOrMark("race-key", 1*time.Hour)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if !seen {
+				mu.Lock()
+				firstCount++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if firstCount != 1 {
+		t.Errorf("expected exactly 1 goroutine to see key as new, got %d", firstCount)
+	}
+}
+
+func TestMemoryStore_SeenOrMark_ExpiredEntry(t *testing.T) {
+	s := NewMemoryStore(10 * time.Millisecond)
+	defer s.Close()
+
+	seen, _ := s.SeenOrMark("exp-key", 50*time.Millisecond)
+	if seen {
+		t.Fatal("first call should return false")
+	}
+
+	seen, _ = s.SeenOrMark("exp-key", 50*time.Millisecond)
+	if !seen {
+		t.Fatal("second call should return true (duplicate)")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	seen, _ = s.SeenOrMark("exp-key", 50*time.Millisecond)
+	if seen {
+		t.Fatal("should return false after TTL expires")
+	}
+}
