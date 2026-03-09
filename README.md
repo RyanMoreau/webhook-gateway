@@ -17,6 +17,8 @@ A single-binary webhook gateway that receives incoming webhooks, verifies signat
 - **SSRF protection** — config-time rejection of private/loopback/link-local IPs and `localhost`, plus a runtime DNS-aware dialer that checks all resolved IPs before connecting
 - **Graceful shutdown** — drains in-flight deliveries on SIGINT/SIGTERM
 
+![Webhook Gateway Diagram](webhook-gateway.png)
+
 ## Quick Start
 
 ```
