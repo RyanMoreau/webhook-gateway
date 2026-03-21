@@ -157,11 +157,13 @@ func validate(cfg *Config) error {
 		if r.Signature.Type == "" {
 			return fmt.Errorf("route %q: signature type is required", r.Path)
 		}
-		if r.Signature.Header == "" {
-			return fmt.Errorf("route %q: signature header is required", r.Path)
-		}
-		if r.Signature.SecretEnv == "" {
-			return fmt.Errorf("route %q: signature secret_env is required", r.Path)
+		if r.Signature.Type != "none" {
+			if r.Signature.Header == "" {
+				return fmt.Errorf("route %q: signature header is required", r.Path)
+			}
+			if r.Signature.SecretEnv == "" {
+				return fmt.Errorf("route %q: signature secret_env is required", r.Path)
+			}
 		}
 		for j, d := range r.Destinations {
 			if d.URL == "" {
@@ -208,6 +210,9 @@ func isBlockedHost(host string) bool {
 func resolveSecrets(cfg *Config) error {
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
+		if r.Signature.Type == "none" {
+			continue
+		}
 		envKey := r.Signature.SecretEnv
 		val := os.Getenv(envKey)
 		if val == "" {

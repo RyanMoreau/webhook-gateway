@@ -65,6 +65,8 @@ func New(cfg *config.Config, dlq deadletter.Store, idem idempotency.Store) *Rout
 	for _, rc := range cfg.Routes {
 		var v signature.Verifier
 		switch rc.Signature.Type {
+		case "none":
+			v = nil // no signature verification
 		case "stripe":
 			v = &signature.StripeVerifier{Tolerance: rc.Signature.Tolerance}
 		default: // hmac-sha256
@@ -130,13 +132,15 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	r.Stats.RequestsReceived.Add(1)
 
-	// Verify signature.
-	sigHeader := req.Header.Get(matched.cfg.Signature.Header)
-	if err := matched.verifier.Verify(sigHeader, matched.secret, body); err != nil {
-		r.Stats.SignatureFailures.Add(1)
-		logger.Warn("signature verification failed", "error", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
+	// Verify signature (skip for routes with type: none).
+	if matched.verifier != nil {
+		sigHeader := req.Header.Get(matched.cfg.Signature.Header)
+		if err := matched.verifier.Verify(sigHeader, matched.secret, body); err != nil {
+			r.Stats.SignatureFailures.Add(1)
+			logger.Warn("signature verification failed", "error", err)
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	// Check idempotency (atomic check-and-set to avoid TOCTOU races).
