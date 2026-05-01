@@ -12,6 +12,7 @@ import (
 type Destination struct {
 	URL     string
 	Timeout time.Duration
+	Headers map[string]string // Static headers injected on every delivery
 }
 
 // retryableError is an error that the retry layer should retry.
@@ -62,6 +63,11 @@ func Deliver(ctx context.Context, dest Destination, headers http.Header, body []
 		for _, v := range vals {
 			req.Header.Add(k, v)
 		}
+	}
+
+	// Inject static destination headers (e.g. auth keys).
+	for k, v := range dest.Headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := httpClient.Do(req)

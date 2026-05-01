@@ -51,8 +51,9 @@ type IdempotencyConfig struct {
 }
 
 type DestConfig struct {
-	URL     string        `yaml:"url"`
-	Timeout time.Duration `yaml:"timeout"`
+	URL     string            `yaml:"url"`
+	Timeout time.Duration     `yaml:"timeout"`
+	Headers map[string]string `yaml:"headers"` // Static headers injected on delivery; values support ${ENV_VAR} expansion
 }
 
 type RetryConfig struct {
@@ -219,6 +220,13 @@ func resolveSecrets(cfg *Config) error {
 			return fmt.Errorf("route %q: environment variable %q is not set", r.Path, envKey)
 		}
 		r.Signature.SecretEnv = val // now holds the actual secret
+
+		// Expand ${ENV_VAR} in destination headers
+		for j := range r.Destinations {
+			for k, v := range r.Destinations[j].Headers {
+				r.Destinations[j].Headers[k] = os.Expand(v, os.Getenv)
+			}
+		}
 	}
 	return nil
 }

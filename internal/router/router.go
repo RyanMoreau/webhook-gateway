@@ -192,6 +192,7 @@ func (r *Router) fanOut(ctx context.Context, logger *slog.Logger, route *routeEn
 		dest := delivery.Destination{
 			URL:     d.URL,
 			Timeout: d.Timeout,
+			Headers: d.Headers,
 		}
 
 		// Acquire semaphore before spawning to avoid unbounded goroutine
