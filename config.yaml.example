@@ -120,6 +120,7 @@ routes:
 #   {"channel": "deploys", "message_id": 123, "text": "<b>Deployed</b> v1.2.3 (healthy)"}
 
 notify:
+  auth_token_env: NOTIFY_AUTH_TOKEN   # optional — if set, requires X-Notify-Token header on all /notify requests
   providers:
     telegram:
       type: telegram

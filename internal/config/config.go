@@ -19,8 +19,10 @@ type Config struct {
 }
 
 type NotifyConfig struct {
-	Providers map[string]ProviderConfig `yaml:"providers"` // keyed by provider name
-	Channels  map[string]ChannelConfig  `yaml:"channels"`
+	AuthTokenEnv string                    `yaml:"auth_token_env"` // env var for bearer token; if set, requires X-Notify-Token header
+	AuthToken    string                    `yaml:"-"`              // resolved at load time
+	Providers    map[string]ProviderConfig `yaml:"providers"`      // keyed by provider name
+	Channels     map[string]ChannelConfig  `yaml:"channels"`
 }
 
 type ProviderConfig struct {
@@ -245,6 +247,11 @@ func resolveSecrets(cfg *Config) error {
 				r.Destinations[j].Headers[k] = os.Expand(v, os.Getenv)
 			}
 		}
+	}
+
+	// Resolve notify auth token.
+	if cfg.Notify.AuthTokenEnv != "" {
+		cfg.Notify.AuthToken = os.Getenv(cfg.Notify.AuthTokenEnv)
 	}
 
 	// Resolve notify provider tokens.

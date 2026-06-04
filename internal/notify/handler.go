@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,8 +19,9 @@ type channel struct {
 
 // Handler serves the POST /notify and POST /notify/edit endpoints.
 type Handler struct {
-	channels map[string]channel
-	stats    *Stats
+	channels  map[string]channel
+	authToken string // if non-empty, requires X-Notify-Token header
+	stats     *Stats
 }
 
 // Stats tracks notification metrics.
@@ -48,6 +50,7 @@ func NewHandler(cfg config.NotifyConfig) (*Handler, error) {
 
 	// Build provider instances.
 	providers := make(map[string]Provider, len(cfg.Providers))
+	disabledProviders := make(map[string]bool)
 	for name, pc := range cfg.Providers {
 		p, err := buildProvider(pc)
 		if err != nil {
@@ -55,15 +58,22 @@ func NewHandler(cfg config.NotifyConfig) (*Handler, error) {
 		}
 		if p != nil {
 			providers[name] = p
+		} else {
+			disabledProviders[name] = true
+			slog.Info("provider disabled (no credentials)", "provider", name)
 		}
 	}
 
 	// Wire channels to providers.
 	channels := make(map[string]channel, len(cfg.Channels))
 	for name, cc := range cfg.Channels {
+		if disabledProviders[cc.Provider] {
+			slog.Info("channel skipped (provider disabled)", "channel", name, "provider", cc.Provider)
+			continue
+		}
 		p, ok := providers[cc.Provider]
 		if !ok {
-			return nil, fmt.Errorf("channel %q: unknown provider %q", name, cc.Provider)
+			return nil, fmt.Errorf("channel %q: unknown provider %q (not defined in providers)", name, cc.Provider)
 		}
 		if cc.Target == "" {
 			return nil, fmt.Errorf("channel %q: no target configured", name)
@@ -76,8 +86,9 @@ func NewHandler(cfg config.NotifyConfig) (*Handler, error) {
 	}
 
 	return &Handler{
-		channels: channels,
-		stats:    &Stats{},
+		channels:  channels,
+		authToken: cfg.AuthToken,
+		stats:     &Stats{},
 	}, nil
 }
 
@@ -119,6 +130,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	if h.authToken != "" {
+		token := r.Header.Get("X-Notify-Token")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(h.authToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	switch r.URL.Path {

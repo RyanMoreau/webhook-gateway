@@ -1,5 +1,13 @@
 package notify
 
+import "errors"
+
+// Sentinel errors for providers that don't support all operations.
+var (
+	ErrEditNotSupported  = errors.New("provider does not support editing messages")
+	ErrPhotoNotSupported = errors.New("provider does not support sending photos")
+)
+
 // Provider delivers notifications to an external service (Telegram, Slack, etc.).
 // Implementations must be safe for concurrent use.
 type Provider interface {

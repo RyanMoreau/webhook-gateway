@@ -290,3 +290,83 @@ func TestNewHandler_NoChannels(t *testing.T) {
 		t.Fatal("expected nil handler when no channels configured")
 	}
 }
+
+func TestAuth_ValidToken(t *testing.T) {
+	srv, _ := fakeTelegram(t)
+	defer srv.Close()
+
+	h := testHandler(t, srv.URL)
+	h.authToken = "secret-token"
+
+	body := `{"channel":"deploys","text":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Notify-Token", "secret-token")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid token, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuth_InvalidToken(t *testing.T) {
+	srv, _ := fakeTelegram(t)
+	defer srv.Close()
+
+	h := testHandler(t, srv.URL)
+	h.authToken = "secret-token"
+
+	body := `{"channel":"deploys","text":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Notify-Token", "wrong-token")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", rec.Code)
+	}
+}
+
+func TestAuth_MissingToken(t *testing.T) {
+	srv, _ := fakeTelegram(t)
+	defer srv.Close()
+
+	h := testHandler(t, srv.URL)
+	h.authToken = "secret-token"
+
+	body := `{"channel":"deploys","text":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// no X-Notify-Token header
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with missing token, got %d", rec.Code)
+	}
+}
+
+func TestAuth_Disabled(t *testing.T) {
+	srv, _ := fakeTelegram(t)
+	defer srv.Close()
+
+	h := testHandler(t, srv.URL)
+	// authToken is empty — no auth required
+
+	body := `{"channel":"deploys","text":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// no token header
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with auth disabled, got %d", rec.Code)
+	}
+}
