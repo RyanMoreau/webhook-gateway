@@ -105,6 +105,42 @@ routes:
       initial_interval: 500ms
       max_interval: 15s
 
+# ── Notifications ──────────────────────────────────────────────────
+# Optional. Exposes POST /notify and POST /notify/edit for sending
+# messages to Telegram channels. Callers POST JSON with a logical
+# channel name; the gateway resolves it to a chat ID and delivers.
+#
+# Any service (Go, TypeScript, Bash) can send notifications by
+# POSTing to the gateway instead of calling the Telegram API directly.
+#
+#   POST /notify
+#   {"channel": "deploys", "text": "<b>Deployed</b> v1.2.3"}
+#
+#   POST /notify/edit
+#   {"channel": "deploys", "message_id": 123, "text": "<b>Deployed</b> v1.2.3 (healthy)"}
+
+notify:
+  providers:
+    telegram:
+      type: telegram
+      bot_token_env: TELEGRAM_BOT_TOKEN
+    # slack:                          # add providers as needed
+    #   type: slack
+    #   bot_token_env: SLACK_BOT_TOKEN
+  channels:
+    default:
+      provider: telegram
+      chat_id_env: TELEGRAM_CHAT_ID
+    deploys:
+      provider: telegram
+      chat_id_env: TELEGRAM_CHAT_ID
+    alerts:
+      provider: telegram
+      chat_id_env: TELEGRAM_CHAT_ID
+    billing:
+      provider: telegram
+      chat_id_env: TELEGRAM_CHAT_ID
+
 dead_letter:
   type: file
   path: ./dead_letters
