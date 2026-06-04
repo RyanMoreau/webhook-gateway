@@ -12,6 +12,7 @@ import (
 	"github.com/ryanmoreau/webhook-gateway/internal/delivery"
 	"github.com/ryanmoreau/webhook-gateway/internal/idempotency"
 	"github.com/ryanmoreau/webhook-gateway/internal/logging"
+	"github.com/ryanmoreau/webhook-gateway/internal/notify"
 	"github.com/ryanmoreau/webhook-gateway/internal/router"
 	"github.com/ryanmoreau/webhook-gateway/internal/server"
 )
@@ -52,13 +53,30 @@ func main() {
 	// Build router.
 	r := router.New(cfg, dlStore, idemStore)
 
+	// Build notify handler (optional — works without providers configured).
+	var notifyHandler server.NotifyHandler
+	var notifyStatsFn func() map[string]int64
+
+	nh, err := notify.NewHandler(cfg.Notify)
+	if err != nil {
+		slog.Error("initializing notify handler", "error", err)
+		os.Exit(1)
+	}
+	if nh != nil {
+		notifyHandler = nh
+		notifyStatsFn = func() map[string]int64 { return nh.Stats().Snapshot() }
+		slog.Info("notify endpoint enabled", "channels", len(cfg.Notify.Channels))
+	} else {
+		slog.Info("notify endpoint disabled (no providers or channels configured)")
+	}
+
 	// Build and start server.
 	srv := server.New(server.Config{
 		Port:         cfg.Server.Port,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		MaxBodySize:  cfg.Server.MaxBodySize,
-	}, r, r, r.Stats)
+	}, r, r, r.Stats, notifyHandler, notifyStatsFn)
 
 	if err := srv.ListenAndServe(30 * time.Second); err != nil {
 		slog.Error("server error", "error", err)

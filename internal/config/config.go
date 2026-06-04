@@ -13,8 +13,28 @@ import (
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Routes     []RouteConfig    `yaml:"routes"`
+	Notify     NotifyConfig     `yaml:"notify"`
 	DeadLetter DeadLetterConfig `yaml:"dead_letter"`
 	Logging    LoggingConfig    `yaml:"logging"`
+}
+
+type NotifyConfig struct {
+	AuthTokenEnv string                    `yaml:"auth_token_env"` // env var for bearer token; if set, requires X-Notify-Token header
+	AuthToken    string                    `yaml:"-"`              // resolved at load time
+	Providers    map[string]ProviderConfig `yaml:"providers"`      // keyed by provider name
+	Channels     map[string]ChannelConfig  `yaml:"channels"`
+}
+
+type ProviderConfig struct {
+	Type        string `yaml:"type"`          // "telegram" (more to come)
+	BotTokenEnv string `yaml:"bot_token_env"` // env var name for bot/API token
+	BotToken    string `yaml:"-"`             // resolved at load time
+}
+
+type ChannelConfig struct {
+	Provider  string `yaml:"provider"`     // references a key in providers
+	ChatIDEnv string `yaml:"chat_id_env"`  // env var name (optional, mutually exclusive with target)
+	Target    string `yaml:"target"`       // literal target value (chat ID, webhook URL, etc.)
 }
 
 type ServerConfig struct {
@@ -228,5 +248,31 @@ func resolveSecrets(cfg *Config) error {
 			}
 		}
 	}
+
+	// Resolve notify auth token.
+	if cfg.Notify.AuthTokenEnv != "" {
+		cfg.Notify.AuthToken = os.Getenv(cfg.Notify.AuthTokenEnv)
+	}
+
+	// Resolve notify provider tokens.
+	for name, p := range cfg.Notify.Providers {
+		if p.BotTokenEnv != "" {
+			p.BotToken = os.Getenv(p.BotTokenEnv)
+			// Provider tokens are optional — gateway works without notifications.
+		}
+		cfg.Notify.Providers[name] = p
+	}
+
+	// Resolve notify channel targets from env vars.
+	for name, ch := range cfg.Notify.Channels {
+		if ch.ChatIDEnv != "" {
+			val := os.Getenv(ch.ChatIDEnv)
+			if val != "" {
+				ch.Target = val
+			}
+			cfg.Notify.Channels[name] = ch
+		}
+	}
+
 	return nil
 }

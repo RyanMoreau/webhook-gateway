@@ -34,8 +34,14 @@ type Server struct {
 	drainer    WaitDrainer
 }
 
+// NotifyHandler is an optional handler for the /notify endpoints.
+type NotifyHandler interface {
+	http.Handler
+}
+
 // New creates a Server that limits request body size and delegates to handler.
-func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters) *Server {
+// notifyHandler is optional — if nil, /notify endpoints are not registered.
+func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters, notifyHandler NotifyHandler, notifyStats func() map[string]int64) *Server {
 	maxBody := cfg.MaxBodySize
 	if maxBody <= 0 {
 		maxBody = 1 << 20
@@ -47,11 +53,21 @@ func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		snap := counters.Snapshot()
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"status": "ok",
 			"stats":  snap,
-		})
+		}
+		if notifyStats != nil {
+			resp["notify"] = notifyStats()
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
+
+	// Notify endpoints (optional).
+	if notifyHandler != nil {
+		mux.Handle("/notify", notifyHandler)
+		mux.Handle("/notify/edit", notifyHandler)
+	}
 
 	// All other requests go to the webhook router with body size limit.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
