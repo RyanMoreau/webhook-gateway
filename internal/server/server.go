@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -42,7 +43,7 @@ type NotifyHandler interface {
 
 // New creates a Server that limits request body size and delegates to handler.
 // notifyHandler is optional — if nil, /notify endpoints are not registered.
-func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters, notifyHandler NotifyHandler, notifyStats func() map[string]int64, logBuf *logging.RingBuffer) *Server {
+func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters, notifyHandler NotifyHandler, notifyStats func() map[string]int64, logBuf *logging.RingBuffer, authToken string) *Server {
 	maxBody := cfg.MaxBodySize
 	if maxBody <= 0 {
 		maxBody = 1 << 20
@@ -66,7 +67,22 @@ func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.
 
 	// Log history endpoint — returns recent log entries as JSON array.
 	if logBuf != nil {
+		checkLogAuth := func(w http.ResponseWriter, r *http.Request) bool {
+			if authToken == "" {
+				return true
+			}
+			token := r.Header.Get("X-Gateway-Token")
+			if subtle.ConstantTimeCompare([]byte(token), []byte(authToken)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return false
+			}
+			return true
+		}
+
 		mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
+			if !checkLogAuth(w, r) {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			entries := logBuf.Recent(200)
 			json.NewEncoder(w).Encode(entries)
@@ -74,6 +90,9 @@ func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.
 
 		// SSE log stream — pushes new entries as they arrive.
 		mux.HandleFunc("GET /logs/stream", func(w http.ResponseWriter, r *http.Request) {
+			if !checkLogAuth(w, r) {
+				return
+			}
 			flusher, ok := w.(http.Flusher)
 			if !ok {
 				http.Error(w, "streaming not supported", http.StatusInternalServerError)

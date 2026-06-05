@@ -11,14 +11,16 @@ import (
 
 // GatewayClient polls a running gateway's /health endpoint.
 type GatewayClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL   string
+	authToken string
+	http      *http.Client
 }
 
-func NewGatewayClient(baseURL string) *GatewayClient {
+func NewGatewayClient(baseURL, authToken string) *GatewayClient {
 	return &GatewayClient{
-		baseURL: baseURL,
-		http:    &http.Client{Timeout: 5 * time.Second},
+		baseURL:   baseURL,
+		authToken: authToken,
+		http:      &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -43,4 +45,16 @@ func (c *GatewayClient) FetchStats() (stats.Snapshot, error) {
 		return stats.Snapshot{}, fmt.Errorf("decoding health response: %w", err)
 	}
 	return hr.Stats, nil
+}
+
+// AuthGet makes a GET request with the auth token header if configured.
+func (c *GatewayClient) AuthGet(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("X-Gateway-Token", c.authToken)
+	}
+	return c.http.Do(req)
 }

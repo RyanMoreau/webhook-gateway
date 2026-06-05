@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -27,7 +28,7 @@ func RetryEntry(entry deadletter.Entry, filePath string) error {
 	if err != nil {
 		return fmt.Errorf("delivering to %s: %w", entry.DestinationURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("destination returned %d", resp.StatusCode)

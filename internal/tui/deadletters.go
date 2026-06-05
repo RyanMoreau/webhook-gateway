@@ -183,6 +183,7 @@ func (m deadLettersModel) update(msg tea.Msg) (deadLettersModel, tea.Cmd) {
 		}
 		m.detail = &msg.entry
 		m.lastIdx = msg.idx
+		m.updateTableRow(msg.idx, msg.entry)
 		if m.ready {
 			m.preview.SetContent(renderPreview(msg.entry))
 			m.preview.GotoTop()
@@ -405,20 +406,21 @@ func (m *deadLettersModel) rebuildTable() {
 		rows[i] = table.Row{
 			e.Timestamp.Format("2006-01-02 15:04:05"),
 			truncate(e.RequestID, 12),
-			"",
-			"",
+			"...",
+			"...",
 		}
 	}
+	m.table.SetRows(rows)
+}
 
-	for i, e := range m.entries {
-		entry, err := ReadEntry(e.Path)
-		if err != nil {
-			continue
-		}
-		rows[i][2] = truncate(entry.RoutePath, 16)
-		rows[i][3] = truncate(entry.ErrorMessage, 38)
+// updateTableRow populates a single row with data from a loaded entry.
+func (m *deadLettersModel) updateTableRow(idx int, entry deadletter.Entry) {
+	rows := m.table.Rows()
+	if idx < 0 || idx >= len(rows) {
+		return
 	}
-
+	rows[idx][2] = truncate(entry.RoutePath, 16)
+	rows[idx][3] = truncate(entry.ErrorMessage, 38)
 	m.table.SetRows(rows)
 }
 

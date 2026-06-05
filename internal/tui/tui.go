@@ -25,6 +25,7 @@ type Options struct {
 	GatewayURL string
 	Config     *config.Config
 	DLDir      string
+	AuthToken  string
 }
 
 type model struct {
@@ -48,11 +49,11 @@ func newModel(opts Options) model {
 	return model{
 		tabs:        []string{"Dashboard", "Dead Letters", "Logs", "Routes"},
 		activeTab:   tabDashboard,
-		dashboard:   newDashboard(opts.GatewayURL, opts.DLDir),
+		dashboard:   newDashboard(opts.GatewayURL, opts.DLDir, opts.AuthToken),
 		deadLetters: newDeadLetters(opts.DLDir),
-		logs:        newLogs(opts.GatewayURL),
+		logs:        newLogs(opts.GatewayURL, opts.AuthToken),
 		routes:      newRoutes(opts.Config),
-		streamer:    newSSEStreamer(opts.GatewayURL),
+		streamer:    newSSEStreamer(opts.GatewayURL, opts.AuthToken),
 	}
 }
 
@@ -106,7 +107,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "q":
-			m.streamer.stop()
 			return m, tea.Quit
 		case "tab":
 			m.activeTab = (m.activeTab + 1) % len(m.tabs)
@@ -225,14 +225,14 @@ func Run(opts Options) error {
 	m := newModel(opts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	// Send the program reference to the model so it can start the SSE streamer.
-	go func() {
-		// Small delay to ensure the program is running before sending.
-		time.Sleep(100 * time.Millisecond)
-		p.Send(programMsg{p: p})
-	}()
+	// Store the program reference before Run() so Init can use it.
+	go p.Send(programMsg{p: p})
 
 	_, err := p.Run()
+
+	// Clean up the SSE streamer regardless of how the program exited.
+	m.streamer.stop()
+
 	if err != nil {
 		return fmt.Errorf("running TUI: %w", err)
 	}

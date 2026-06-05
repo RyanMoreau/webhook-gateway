@@ -29,10 +29,10 @@ type dashboardModel struct {
 	width      int
 }
 
-func newDashboard(gatewayURL, dlDir string) dashboardModel {
+func newDashboard(gatewayURL, dlDir, authToken string) dashboardModel {
 	return dashboardModel{
 		gatewayURL: gatewayURL,
-		client:     NewGatewayClient(gatewayURL),
+		client:     NewGatewayClient(gatewayURL, authToken),
 		dlDir:      dlDir,
 	}
 }

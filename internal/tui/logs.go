@@ -2,10 +2,12 @@ package tui
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -43,6 +45,7 @@ var levelOrder = []logLevel{logAll, logDebug, logInfo, logWarn, logError}
 
 type logsModel struct {
 	gatewayURL string
+	authToken  string
 	viewport   viewport.Model
 	entries    []logging.LogEntry
 	level      logLevel
@@ -54,9 +57,10 @@ type logsModel struct {
 	maxEntries int
 }
 
-func newLogs(gatewayURL string) logsModel {
+func newLogs(gatewayURL, authToken string) logsModel {
 	return logsModel{
 		gatewayURL: gatewayURL,
+		authToken:  authToken,
 		level:      logAll,
 		autoScroll: true,
 		maxEntries: 500,
@@ -82,7 +86,15 @@ type logErrorMsg struct {
 // Commands
 
 func (m logsModel) connectSSE() tea.Msg {
-	resp, err := http.Get(m.gatewayURL + "/logs")
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, m.gatewayURL+"/logs", nil)
+	if err != nil {
+		return logErrorMsg{err: err}
+	}
+	if m.authToken != "" {
+		req.Header.Set("X-Gateway-Token", m.authToken)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return logErrorMsg{err: err}
 	}
@@ -95,29 +107,47 @@ func (m logsModel) connectSSE() tea.Msg {
 
 // sseStreamer manages a persistent SSE connection and sends entries to the program.
 type sseStreamer struct {
-	url  string
-	done chan struct{}
+	url       string
+	authToken string
+	cancel    context.CancelFunc
+	once      sync.Once
 }
 
-func newSSEStreamer(url string) *sseStreamer {
+func newSSEStreamer(url, authToken string) *sseStreamer {
 	return &sseStreamer{
-		url:  url,
-		done: make(chan struct{}),
+		url:       url,
+		authToken: authToken,
 	}
 }
 
 func (s *sseStreamer) start(send func(tea.Msg)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
 	go func() {
 		for {
-			select {
-			case <-s.done:
+			if ctx.Err() != nil {
 				return
-			default:
 			}
 
-			resp, err := http.Get(s.url + "/logs/stream")
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url+"/logs/stream", nil)
 			if err != nil {
-				time.Sleep(2 * time.Second)
+				return
+			}
+			if s.authToken != "" {
+				req.Header.Set("X-Gateway-Token", s.authToken)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
 				continue
 			}
 
@@ -138,9 +168,12 @@ func (s *sseStreamer) start(send func(tea.Msg)) {
 			}
 			resp.Body.Close()
 
-			// Reconnect after a brief pause.
+			if ctx.Err() != nil {
+				return
+			}
+
 			select {
-			case <-s.done:
+			case <-ctx.Done():
 				return
 			case <-time.After(2 * time.Second):
 			}
@@ -149,7 +182,11 @@ func (s *sseStreamer) start(send func(tea.Msg)) {
 }
 
 func (s *sseStreamer) stop() {
-	close(s.done)
+	s.once.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
 }
 
 func (m logsModel) update(msg tea.Msg) (logsModel, tea.Cmd) {
