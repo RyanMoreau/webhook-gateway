@@ -151,7 +151,9 @@ func (m deadLettersModel) update(msg tea.Msg) (deadLettersModel, tea.Cmd) {
 		m.table.SetHeight(tableH)
 		if !m.ready {
 			m.preview = viewport.New(msg.Width-4, previewH)
-			m.preview.SetContent(dlDim.Render("  Loading..."))
+			if len(m.entries) > 0 {
+				m.preview.SetContent(dlDim.Render("  Loading..."))
+			}
 			m.ready = true
 		} else {
 			m.preview.Width = msg.Width - 4
@@ -175,9 +177,6 @@ func (m deadLettersModel) update(msg tea.Msg) (deadLettersModel, tea.Cmd) {
 		} else {
 			m.detail = nil
 			m.lastIdx = -1
-			if m.ready {
-				m.preview.SetContent(dlDim.Render("  No dead letters."))
-			}
 		}
 
 	case dlPreviewMsg:
