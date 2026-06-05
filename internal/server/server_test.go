@@ -24,7 +24,7 @@ func TestServer_RespondsOnPort(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		MaxBodySize:  1 << 20,
-	}, handler, nil, stats.New(), nil, nil)
+	}, handler, nil, stats.New(), nil, nil, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,7 +65,7 @@ func TestServer_MaxBodySize_413(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		MaxBodySize:  10, // 10 bytes
-	}, handler, nil, stats.New(), nil, nil)
+	}, handler, nil, stats.New(), nil, nil, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -105,7 +105,7 @@ func TestServer_MaxBodySize_ExactLimit(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		MaxBodySize:  10,
-	}, handler, nil, stats.New(), nil, nil)
+	}, handler, nil, stats.New(), nil, nil, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -154,7 +154,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		MaxBodySize:  1 << 20,
-	}, handler, nil, stats.New(), nil, nil)
+	}, handler, nil, stats.New(), nil, nil, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

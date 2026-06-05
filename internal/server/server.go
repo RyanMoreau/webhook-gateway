@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ryanmoreau/webhook-gateway/internal/logging"
 	"github.com/ryanmoreau/webhook-gateway/internal/stats"
 )
 
@@ -41,7 +42,7 @@ type NotifyHandler interface {
 
 // New creates a Server that limits request body size and delegates to handler.
 // notifyHandler is optional — if nil, /notify endpoints are not registered.
-func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters, notifyHandler NotifyHandler, notifyStats func() map[string]int64) *Server {
+func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.Counters, notifyHandler NotifyHandler, notifyStats func() map[string]int64, logBuf *logging.RingBuffer) *Server {
 	maxBody := cfg.MaxBodySize
 	if maxBody <= 0 {
 		maxBody = 1 << 20
@@ -62,6 +63,46 @@ func New(cfg Config, handler http.Handler, drainer WaitDrainer, counters *stats.
 		}
 		json.NewEncoder(w).Encode(resp)
 	})
+
+	// Log history endpoint — returns recent log entries as JSON array.
+	if logBuf != nil {
+		mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			entries := logBuf.Recent(200)
+			json.NewEncoder(w).Encode(entries)
+		})
+
+		// SSE log stream — pushes new entries as they arrive.
+		mux.HandleFunc("GET /logs/stream", func(w http.ResponseWriter, r *http.Request) {
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher.Flush()
+
+			ch := logBuf.Subscribe()
+			defer logBuf.Unsubscribe(ch)
+
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case entry := <-ch:
+					data, err := logging.MarshalEntry(entry)
+					if err != nil {
+						continue
+					}
+					fmt.Fprintf(w, "data: %s\n\n", data)
+					flusher.Flush()
+				}
+			}
+		})
+	}
 
 	// Notify endpoints (optional).
 	if notifyHandler != nil {
