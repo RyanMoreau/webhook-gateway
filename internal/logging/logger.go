@@ -21,7 +21,8 @@ func RequestID(ctx context.Context) string {
 }
 
 // Setup initializes the default slog logger based on the given level and format.
-func Setup(level, format string) {
+// It returns a RingBuffer that captures all log entries for streaming via the TUI.
+func Setup(level, format string) *RingBuffer {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -44,5 +45,9 @@ func Setup(level, format string) {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	}
 
-	slog.SetDefault(slog.New(handler))
+	buf := NewRingBuffer(1000)
+	wrapped := newBufferHandler(handler, buf)
+	slog.SetDefault(slog.New(wrapped))
+
+	return buf
 }
