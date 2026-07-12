@@ -1,14 +1,15 @@
 # Webhook Gateway
 
-A single-binary webhook gateway that receives incoming webhooks, verifies signatures, and fans out to multiple destinations with retries and a dead letter queue. All behavior is driven by a YAML config file.
+A single-binary webhook gateway that verifies incoming webhooks, hands accepted events to a delivery backend, and returns a typed acceptance response. All behavior is driven by a YAML config file.
 
 ## Features
 
 - **Signature verification** — HMAC-SHA256 (GitHub, GitLab, etc.) and Stripe's non-standard `t=,v1=` format with replay protection
-- **Fan-out** — deliver to multiple destinations concurrently per route
+- **Fan-out** — delivery backend fans out to multiple destinations concurrently
 - **Retries** — exponential backoff with jitter, distinguishes retryable (5xx, network) from non-retryable (4xx) errors
 - **Deduplication** — in-memory idempotency store with configurable TTL, per-route
-- **Dead letter queue** — failed deliveries saved as JSON files for inspection or replay
+- **Backend adapter** — accepted events are handed to a pluggable delivery backend
+- **Dead letter queue** — failed deliveries are saved as JSON files for inspection or replay
 - **Request tracing** — every inbound webhook gets a UUID that flows through delivery, retries, and dead letter entries
 - **Header allowlisting** — control exactly which headers are forwarded to destinations
 - **Body size limiting** — caps inbound payloads to prevent memory exhaustion
@@ -111,8 +112,8 @@ The gateway always forwards `Content-Type` and `X-Webhook-Gateway-Request-Id`. A
 1. Webhook arrives at a configured path
 2. Signature is verified against the raw body
 3. If idempotency is enabled, the event ID is checked — duplicates get a `200` with no delivery
-4. The gateway returns `200` to the provider immediately
-5. Deliveries fan out to all destinations concurrently in the background
+4. The gateway hands the normalized event to the configured backend
+5. The backend responds with `202 Accepted` and handles delivery in the background
 6. Failed deliveries (after retries) go to the dead letter queue
 
 ## Security
