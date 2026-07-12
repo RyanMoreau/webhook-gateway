@@ -9,39 +9,24 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/ryanmoreau/webhook-gateway/internal/backend"
 	"github.com/ryanmoreau/webhook-gateway/internal/config"
 	"github.com/ryanmoreau/webhook-gateway/internal/deadletter"
-	"github.com/ryanmoreau/webhook-gateway/internal/delivery"
 	"github.com/ryanmoreau/webhook-gateway/internal/idempotency"
 	"github.com/ryanmoreau/webhook-gateway/internal/logging"
 	"github.com/ryanmoreau/webhook-gateway/internal/signature"
 	"github.com/ryanmoreau/webhook-gateway/internal/stats"
 )
 
-// hopByHopHeaders are headers that must not be forwarded to destinations.
-var hopByHopHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Te":                  true,
-	"Trailers":            true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-}
-
 // Router matches incoming webhook requests to configured routes, verifies
-// signatures, checks idempotency, and fans out deliveries asynchronously.
+// signatures, checks idempotency, and hands accepted events to a backend.
 type Router struct {
-	routes     []routeEntry
-	dlq        deadletter.Store
-	idem       idempotency.Store
-	Stats      *stats.Counters
-	inFlight   sync.WaitGroup
-	sem        chan struct{} // concurrency limiter; nil if unlimited
+	routes  []routeEntry
+	idem    idempotency.Store
+	backend backend.Adapter
+	Stats   *stats.Counters
 }
 
 type routeEntry struct {
@@ -50,16 +35,26 @@ type routeEntry struct {
 	secret   string
 }
 
+type Option func(*Router)
+
+// WithBackend overrides the default delivery backend.
+func WithBackend(b backend.Adapter) Option {
+	return func(r *Router) {
+		if b != nil {
+			r.backend = b
+		}
+	}
+}
+
 // New creates a Router from the loaded config.
-func New(cfg *config.Config, dlq deadletter.Store, idem idempotency.Store) *Router {
+func New(cfg *config.Config, dlq deadletter.Store, idem idempotency.Store, opts ...Option) *Router {
 	r := &Router{
-		dlq:   dlq,
 		idem:  idem,
 		Stats: stats.New(),
 	}
 
-	if cfg.Server.ConcurrencyLimit > 0 {
-		r.sem = make(chan struct{}, cfg.Server.ConcurrencyLimit)
+	for _, opt := range opts {
+		opt(r)
 	}
 
 	for _, rc := range cfg.Routes {
@@ -83,20 +78,19 @@ func New(cfg *config.Config, dlq deadletter.Store, idem idempotency.Store) *Rout
 		})
 	}
 
+	if r.backend == nil {
+		r.backend = backend.NewFanout(dlq, r.Stats, cfg.Server.ConcurrencyLimit)
+	}
+
 	return r
 }
 
 // WaitInFlight blocks until all in-flight deliveries complete or ctx expires.
 func (r *Router) WaitInFlight(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		r.inFlight.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
+	if r.backend == nil {
+		return
 	}
+	r.backend.WaitInFlight(ctx)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -117,9 +111,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Assign request ID.
+	// Assign request ID and detach background delivery from the request
+	// cancellation so the backend can finish after we return 202.
 	reqID := newRequestID()
-	ctx := logging.WithRequestID(context.Background(), reqID)
+	ctx := logging.WithRequestID(context.WithoutCancel(req.Context()), reqID)
 	logger := slog.With("request_id", reqID, "route", matched.cfg.Path)
 
 	// Read body once.
@@ -163,114 +158,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Build forwarded headers.
-	fwdHeaders := buildForwardHeaders(req.Header, matched.cfg.ForwardHeaders, reqID)
-
-	// Return 200 immediately — fan-out is async.
-	w.WriteHeader(http.StatusOK)
-
-	// Fan out to all destinations concurrently.
-	route := matched // capture for goroutine
-	r.inFlight.Add(1)
-	r.Stats.InFlight.Add(1)
-	go func() {
-		defer r.inFlight.Done()
-		defer r.Stats.InFlight.Add(-1)
-		r.fanOut(ctx, logger, route, fwdHeaders, body, reqID)
-	}()
-}
-
-func (r *Router) fanOut(ctx context.Context, logger *slog.Logger, route *routeEntry, headers http.Header, body []byte, reqID string) {
-	retryCfg := delivery.RetryConfig{
-		MaxAttempts:     route.cfg.Retry.MaxAttempts,
-		InitialInterval: route.cfg.Retry.InitialInterval,
-		MaxInterval:     route.cfg.Retry.MaxInterval,
+	accepted, err := r.backend.Accept(ctx, backend.Event{
+		RequestID:      reqID,
+		RoutePath:      matched.cfg.Path,
+		Body:           body,
+		Headers:        req.Header.Clone(),
+		ForwardHeaders: matched.cfg.ForwardHeaders,
+		Destinations:   matched.cfg.Destinations,
+		Retry:          matched.cfg.Retry,
+		ReceivedAt:     time.Now().UTC(),
+	})
+	if err != nil {
+		logger.Error("accepting event failed", "error", err)
+		http.Error(w, "failed to accept event", http.StatusServiceUnavailable)
+		return
 	}
 
-	var wg sync.WaitGroup
-	for _, d := range route.cfg.Destinations {
-		dest := delivery.Destination{
-			URL:     d.URL,
-			Timeout: d.Timeout,
-			Headers: d.Headers,
-		}
+	logger.Info("event accepted",
+		"receipt_id", accepted.ReceiptID,
+		"accepted_at", accepted.AcceptedAt)
 
-		// Acquire semaphore before spawning to avoid unbounded goroutine
-		// accumulation when all destinations are slow.
-		if r.sem != nil {
-			r.sem <- struct{}{}
-		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if r.sem != nil {
-				defer func() { <-r.sem }()
-			}
-
-			r.Stats.DeliveriesAttempted.Add(1)
-			err := delivery.WithRetry(ctx, retryCfg, func() error {
-				return delivery.Deliver(ctx, dest, headers, body)
-			})
-			if err != nil {
-				r.Stats.DeliveriesFailed.Add(1)
-				logger.Error("delivery failed",
-					"destination", dest.URL,
-					"error", err,
-					"attempts", retryCfg.MaxAttempts)
-
-				dlEntry := deadletter.Entry{
-					RequestID:      reqID,
-					Timestamp:      time.Now().UTC(),
-					RoutePath:      route.cfg.Path,
-					DestinationURL: dest.URL,
-					RequestBody:    body,
-					Headers:        flattenHeaders(headers),
-					ErrorMessage:   err.Error(),
-					AttemptCount:   retryCfg.MaxAttempts,
-				}
-				r.Stats.DeadLettersWritten.Add(1)
-				if dlErr := r.dlq.Save(dlEntry); dlErr != nil {
-					logger.Error("saving dead letter", "error", dlErr)
-				}
-			} else {
-				r.Stats.DeliveriesSucceeded.Add(1)
-				logger.Info("delivery succeeded", "destination", dest.URL)
-			}
-		}()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(accepted); err != nil {
+		logger.Error("encoding acceptance response failed", "error", err)
 	}
-	wg.Wait()
-}
-
-// buildForwardHeaders constructs the header set to forward to destinations.
-// Always includes Content-Type and X-Webhook-Gateway-Request-Id.
-// Includes any headers from the allowlist. Strips hop-by-hop and Host.
-func buildForwardHeaders(src http.Header, allowlist []string, reqID string) http.Header {
-	h := make(http.Header)
-
-	// Always forward Content-Type.
-	if ct := src.Get("Content-Type"); ct != "" {
-		h.Set("Content-Type", ct)
-	}
-
-	// Forward allowlisted headers.
-	for _, name := range allowlist {
-		if hopByHopHeaders[http.CanonicalHeaderKey(name)] {
-			continue
-		}
-		if http.CanonicalHeaderKey(name) == "Host" {
-			continue
-		}
-		if vals := src.Values(name); len(vals) > 0 {
-			for _, v := range vals {
-				h.Add(name, v)
-			}
-		}
-	}
-
-	h.Set("X-Webhook-Gateway-Request-Id", reqID)
-
-	return h
 }
 
 // extractKeyPath extracts a value from JSON using a dot-separated path.
@@ -308,15 +220,6 @@ func extractKeyPath(body []byte, path string) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
-}
-
-// flattenHeaders converts http.Header to a simple map (first value only).
-func flattenHeaders(h http.Header) map[string]string {
-	m := make(map[string]string, len(h))
-	for k := range h {
-		m[k] = h.Get(k)
-	}
-	return m
 }
 
 func newRequestID() string {
