@@ -111,9 +111,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Assign request ID.
+	// Assign request ID and detach background delivery from the request
+	// cancellation so the backend can finish after we return 202.
 	reqID := newRequestID()
-	ctx := logging.WithRequestID(context.Background(), reqID)
+	ctx := logging.WithRequestID(context.WithoutCancel(req.Context()), reqID)
 	logger := slog.With("request_id", reqID, "route", matched.cfg.Path)
 
 	// Read body once.
