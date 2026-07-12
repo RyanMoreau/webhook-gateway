@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ryanmoreau/webhook-gateway/internal/backend"
 	"github.com/ryanmoreau/webhook-gateway/internal/config"
 	"github.com/ryanmoreau/webhook-gateway/internal/deadletter"
 	"github.com/ryanmoreau/webhook-gateway/internal/idempotency"
@@ -44,6 +46,20 @@ func (m *mockDLQ) Entries() []deadletter.Entry {
 	copy(cp, m.entries)
 	return cp
 }
+
+type mockBackend struct {
+	mu       sync.Mutex
+	accepted []backend.Event
+}
+
+func (m *mockBackend) Accept(ctx context.Context, event backend.Event) (backend.Acceptance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accepted = append(m.accepted, event)
+	return backend.Acceptance{ReceiptID: event.RequestID, AcceptedAt: time.Now().UTC(), Status: "accepted"}, nil
+}
+
+func (m *mockBackend) WaitInFlight(ctx context.Context) {}
 
 func newTestRouter(t *testing.T, destURLs []string, secret string, opts ...func(*config.Config)) (*Router, *mockDLQ) {
 	t.Helper()
@@ -125,8 +141,16 @@ func TestRouter_ValidRequest_DeliveredToAllDestinations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+
+	var acceptance backend.Acceptance
+	if err := json.NewDecoder(resp.Body).Decode(&acceptance); err != nil {
+		t.Fatalf("decoding acceptance: %v", err)
+	}
+	if acceptance.ReceiptID == "" {
+		t.Fatal("expected receipt_id in response")
 	}
 
 	// Wait for async fan-out.
@@ -219,7 +243,7 @@ func TestRouter_Idempotency_SkipsDuplicate(t *testing.T) {
 	req1, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req1.Header.Set("X-Signature", sig)
 	resp1, _ := http.DefaultClient.Do(req1)
-	if resp1.StatusCode != 200 {
+	if resp1.StatusCode != http.StatusAccepted {
 		t.Fatalf("first request: status = %d", resp1.StatusCode)
 	}
 
@@ -233,7 +257,7 @@ func TestRouter_Idempotency_SkipsDuplicate(t *testing.T) {
 	req2, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req2.Header.Set("X-Signature", sig)
 	resp2, _ := http.DefaultClient.Do(req2)
-	if resp2.StatusCode != 200 {
+	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("second request: status = %d", resp2.StatusCode)
 	}
 
@@ -244,6 +268,135 @@ func TestRouter_Idempotency_SkipsDuplicate(t *testing.T) {
 		t.Errorf("delivery_count = %d, want 1 (dedup should skip second)", deliveryCount)
 	}
 	mu.Unlock()
+}
+
+func TestRouter_CustomBackendReceivesEvent(t *testing.T) {
+	secret := "secret"
+	mock := &mockBackend{}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        8080,
+			MaxBodySize: 1 << 20,
+		},
+		Routes: []config.RouteConfig{
+			{
+				Path: "/hooks/test",
+				Signature: config.SignatureConfig{
+					Type:      "hmac-sha256",
+					Header:    "X-Signature",
+					SecretEnv: secret,
+					Encoding:  "hex",
+				},
+				Destinations: []config.DestConfig{
+					{URL: "https://example.com/webhook", Timeout: 5 * time.Second},
+				},
+				Retry: config.RetryConfig{
+					MaxAttempts:     1,
+					InitialInterval: 10 * time.Millisecond,
+					MaxInterval:     100 * time.Millisecond,
+				},
+			},
+		},
+	}
+
+	dlq := &mockDLQ{}
+	idem := idempotency.NewMemoryStore(1 * time.Minute)
+	defer idem.Close()
+
+	router := New(cfg, dlq, idem, WithBackend(mock))
+	gw := httptest.NewServer(router)
+	defer gw.Close()
+
+	body := []byte(`{"event":"custom"}`)
+	sig := sign(secret, body)
+
+	req, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+
+	waitForDeliveries(t, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return len(mock.accepted) == 1
+	})
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if got := mock.accepted[0].RoutePath; got != "/hooks/test" {
+		t.Fatalf("route path = %q, want /hooks/test", got)
+	}
+}
+
+func TestRouter_CustomBackendViaRecorder(t *testing.T) {
+	secret := "secret"
+	mock := &mockBackend{}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        8080,
+			MaxBodySize: 1 << 20,
+		},
+		Routes: []config.RouteConfig{
+			{
+				Path: "/hooks/test",
+				Signature: config.SignatureConfig{
+					Type:      "hmac-sha256",
+					Header:    "X-Signature",
+					SecretEnv: secret,
+					Encoding:  "hex",
+				},
+				Destinations: []config.DestConfig{
+					{URL: "https://example.com/webhook", Timeout: 5 * time.Second},
+				},
+				Retry: config.RetryConfig{
+					MaxAttempts:     1,
+					InitialInterval: 10 * time.Millisecond,
+					MaxInterval:     100 * time.Millisecond,
+				},
+			},
+		},
+	}
+
+	dlq := &mockDLQ{}
+	idem := idempotency.NewMemoryStore(1 * time.Minute)
+	defer idem.Close()
+
+	router := New(cfg, dlq, idem, WithBackend(mock))
+
+	body := []byte(`{"event":"recorded"}`)
+	sig := sign(secret, body)
+
+	req := httptest.NewRequest(http.MethodPost, "/hooks/test", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature", sig)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+
+	var acceptance backend.Acceptance
+	if err := json.NewDecoder(rec.Body).Decode(&acceptance); err != nil {
+		t.Fatalf("decoding acceptance: %v", err)
+	}
+	if acceptance.ReceiptID == "" {
+		t.Fatal("expected receipt_id in response")
+	}
+
+	waitForDeliveries(t, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return len(mock.accepted) == 1
+	})
 }
 
 func TestRouter_FailedDestination_DLQEntry(t *testing.T) {
@@ -263,8 +416,8 @@ func TestRouter_FailedDestination_DLQEntry(t *testing.T) {
 	req, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req.Header.Set("X-Signature", sig)
 	resp, _ := http.DefaultClient.Do(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200 (async delivery)", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (async delivery)", resp.StatusCode)
 	}
 
 	waitForDeliveries(t, func() bool {
@@ -535,8 +688,8 @@ func TestRouter_MixedDestinations_PartialFailure(t *testing.T) {
 	req, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req.Header.Set("X-Signature", sig)
 	resp, _ := http.DefaultClient.Do(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
 	}
 
 	// Wait for all three destinations to be hit.
@@ -582,8 +735,8 @@ func TestRouter_AllDestinationsFail(t *testing.T) {
 	req, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req.Header.Set("X-Signature", sig)
 	resp, _ := http.DefaultClient.Do(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200 (async)", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (async)", resp.StatusCode)
 	}
 
 	// Both destinations should produce DLQ entries.
@@ -649,8 +802,8 @@ func TestRouter_ConcurrencyLimit(t *testing.T) {
 	req, _ := http.NewRequest("POST", gw.URL+"/hooks/test", strings.NewReader(string(body)))
 	req.Header.Set("X-Signature", sig)
 	resp, _ := http.DefaultClient.Do(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
 	}
 
 	// Wait for all 4 deliveries to complete.
