@@ -25,7 +25,6 @@ const (
 var (
 	dlHeader  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	dlHelp    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	dlStatus  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	dlConfirm = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	dlKey     = lipgloss.NewStyle().Foreground(lipgloss.Color("63")).Bold(true).Width(16)
 	dlVal     = lipgloss.NewStyle()
@@ -42,9 +41,9 @@ var (
 			BorderForeground(lipgloss.Color("63"))
 
 	dlPanelInactive = lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderTop(true).
-				BorderForeground(lipgloss.Color("236"))
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderTop(true).
+			BorderForeground(lipgloss.Color("236"))
 )
 
 type deadLettersModel struct {

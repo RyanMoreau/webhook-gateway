@@ -54,7 +54,7 @@ func (t *TelegramProvider) Edit(chatID string, messageID int, text, parseMode st
 
 	payload := map[string]any{
 		"chat_id":                  chatID,
-		"message_id":              messageID,
+		"message_id":               messageID,
 		"text":                     text,
 		"parse_mode":               parseMode,
 		"disable_web_page_preview": true,

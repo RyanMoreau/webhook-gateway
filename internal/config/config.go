@@ -32,9 +32,9 @@ type ProviderConfig struct {
 }
 
 type ChannelConfig struct {
-	Provider  string `yaml:"provider"`     // references a key in providers
-	ChatIDEnv string `yaml:"chat_id_env"`  // env var name (optional, mutually exclusive with target)
-	Target    string `yaml:"target"`       // literal target value (chat ID, webhook URL, etc.)
+	Provider  string `yaml:"provider"`    // references a key in providers
+	ChatIDEnv string `yaml:"chat_id_env"` // env var name (optional, mutually exclusive with target)
+	Target    string `yaml:"target"`      // literal target value (chat ID, webhook URL, etc.)
 }
 
 type ServerConfig struct {

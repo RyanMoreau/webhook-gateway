@@ -164,10 +164,10 @@ func TestFileStore_ConcurrentSaves(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			errs <- store.Save(Entry{
-				RequestID:   fmt.Sprintf("req-concurrent-%d", i),
-				Timestamp:   time.Now().UTC(),
-				RoutePath:   "/hooks/test",
-				RequestBody: []byte(fmt.Sprintf(`{"i":%d}`, i)),
+				RequestID:    fmt.Sprintf("req-concurrent-%d", i),
+				Timestamp:    time.Now().UTC(),
+				RoutePath:    "/hooks/test",
+				RequestBody:  []byte(fmt.Sprintf(`{"i":%d}`, i)),
 				ErrorMessage: "test error",
 			})
 		}(i)
