@@ -98,9 +98,9 @@ func TestDeliver_HeadersForwarded(t *testing.T) {
 	defer srv.Close()
 
 	headers := http.Header{
-		"Content-Type":                   {"application/json"},
-		"X-Webhook-Gateway-Request-Id":   {"req-123"},
-		"X-GitHub-Event":                 {"push"},
+		"Content-Type":                 {"application/json"},
+		"X-Webhook-Gateway-Request-Id": {"req-123"},
+		"X-GitHub-Event":               {"push"},
 	}
 	dest := Destination{URL: srv.URL, Timeout: 5 * time.Second}
 	err := Deliver(context.Background(), dest, headers, []byte("{}"))
